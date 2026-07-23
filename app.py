@@ -147,24 +147,43 @@ with st.sidebar:
     min_cf = st.number_input("Minimum Monthly Cash Flow ($)", value=0, step=50)
 
     st.divider()
-    st.subheader("API Call Budget")
-    max_rent_calls = st.number_input(
-        "Max rent AVM calls",
-        value=40,
-        min_value=0,
-        max_value=500,
-        step=5,
-        help=(
-            "Each property needs 1 Rentcast API call for an accurate rent estimate. "
-            "Free tier = 50 calls/month total (listings pages also count). "
-            "Properties are pre-screened with the 0.8%% rule first — only the most "
-            "promising ones spend real API calls. Set to 0 to use 0.8%% rule for all."
-        ),
+    st.subheader("Rent Estimate Source")
+    rent_source_mode = st.radio(
+        "How to estimate rent",
+        ["Rentcast AVM (API)", "Manual Entry", "0.8% Rule (no API)"],
+        help="Rentcast AVM is most accurate. Manual lets you set rent yourself. 0.8% Rule uses no API calls.",
     )
-    st.caption(
-        "How it works: All listings are ranked by 0.8% rule first (free). "
-        "Then real rent estimates are fetched only for the top candidates."
-    )
+
+    manual_rent = None
+    max_rent_calls = 0
+
+    if rent_source_mode == "Manual Entry":
+        manual_rent = st.number_input(
+            "Monthly Rent to apply to all properties ($)",
+            value=2000, step=50, min_value=0,
+            help="This single rent figure will be used for every property in the results.",
+        )
+        st.caption("No API calls used. Great when you already know market rent for the area.")
+    elif rent_source_mode == "Rentcast AVM (API)":
+        max_rent_calls = st.number_input(
+            "Max rent AVM calls",
+            value=40,
+            min_value=1,
+            max_value=500,
+            step=5,
+            help=(
+                "Each property needs 1 Rentcast API call for an accurate rent estimate. "
+                "Free tier = 50 calls/month total (listings pages also count). "
+                "Properties are pre-screened with the 0.8%% rule first — only the most "
+                "promising ones spend real API calls."
+            ),
+        )
+        st.caption(
+            "All listings are ranked by 0.8% rule first (free). "
+            "Real AVM estimates are fetched only for the top candidates."
+        )
+    else:
+        st.caption("Conservative estimate: monthly rent = 0.8% of purchase price. No API calls used.")
 
     st.divider()
     search_btn = st.button("🔍 Search Properties", use_container_width=True, type="primary")
@@ -226,27 +245,28 @@ if search_btn:
         st.warning("No listings found for your search criteria. Try broadening the price range or location.")
         st.stop()
 
-    # Phase 1: Pre-screen all listings with 0.8% rule (zero API calls)
-    # This sorts listings so the most promising ones get real AVM calls first.
+    # Pre-screen all listings with 0.8% rule (zero API calls) to sort best candidates first
     prescreened = prescreen_listings(listings, assumptions)
     n_all = len(prescreened)
 
-    api_note = (
-        f"Found **{n_all} listings**. "
-        + (f"Pre-screened with 0.8% rule; fetching rent AVM for top **{int(max_rent_calls)}** candidates..."
-           if max_rent_calls > 0 else
-           "Using 0.8% rule for all rent estimates (0 AVM calls).")
-    )
-    st.info(api_note)
-
-    # Phase 2: Fetch accurate rent estimates only for the top candidates
-    progress_bar = st.progress(0, text="Fetching rent estimates...")
-
-    def update_progress(done: int, total: int) -> None:
-        progress_bar.progress(done / total, text=f"Rent estimates: {done}/{total}")
-
     rent_map: dict = {}
-    if max_rent_calls > 0:
+
+    if rent_source_mode == "Manual Entry":
+        st.info(f"Found **{n_all} listings**. Using manual rent of **${manual_rent:,}/mo** for all properties.")
+
+    elif rent_source_mode == "0.8% Rule (no API)":
+        st.info(f"Found **{n_all} listings**. Using 0.8% rule for all rent estimates (no API calls).")
+
+    else:  # Rentcast AVM
+        st.info(
+            f"Found **{n_all} listings**. "
+            f"Pre-screened with 0.8% rule; fetching Rentcast AVM for top **{int(max_rent_calls)}** candidates..."
+        )
+        progress_bar = st.progress(0, text="Fetching rent estimates...")
+
+        def update_progress(done: int, total: int) -> None:
+            progress_bar.progress(done / total, text=f"Rent estimates: {done}/{total}")
+
         try:
             rent_map = batch_rent_estimates(
                 api_key=api_key,
@@ -261,15 +281,14 @@ if search_btn:
                 "**0.8% rule** as a conservative fallback."
             )
 
-    progress_bar.empty()
-
-    api_hits = sum(1 for v in rent_map.values() if v is not None)
-    fallback_count = n_all - api_hits
-    if fallback_count > 0 and max_rent_calls > 0:
-        st.caption(
-            f"ℹ️ {api_hits} properties got accurate AVM rent estimates; "
-            f"{fallback_count} used the 0.8% rule fallback (pre-screened out or API budget reached)."
-        )
+        progress_bar.empty()
+        api_hits = sum(1 for v in rent_map.values() if v is not None)
+        fallback_count = n_all - api_hits
+        if fallback_count > 0:
+            st.caption(
+                f"ℹ️ {api_hits} properties got AVM estimates; "
+                f"{fallback_count} used 0.8% rule fallback."
+            )
 
     # Calculate CoC for each listing (use prescreened order)
     results: list[LTRResult] = []
@@ -281,13 +300,15 @@ if search_btn:
         listing_id = listing.get("id", listing.get("formattedAddress", ""))
         rent_data = rent_map.get(listing_id)
 
-        if rent_data:
+        if rent_source_mode == "Manual Entry":
+            monthly_rent = float(manual_rent)
+            rent_source = "manual"
+        elif rent_data:
             monthly_rent, rent_low, rent_high = rent_data
             rent_source = "api_estimate"
         else:
             monthly_rent = estimate_rent_1pct(price)
-            rent_low = monthly_rent * 0.85
-            rent_high = monthly_rent * 1.15
+            rent_source = "0.8pct_rule"
             rent_source = "0.8pct_rule"
 
         hoa = 0.0
@@ -372,7 +393,7 @@ else:
             "Baths": r.bathrooms,
             "SqFt": r.sqft,
             "Est. Rent": r.monthly_rent,
-            "Rent Source": "✅ API" if r.rent_source == "api_estimate" else "📐 Est.",
+            "Rent Source": {"api_estimate": "✅ AVM", "manual": "✏️ Manual"}.get(r.rent_source, "📐 Est."),
             "Monthly CF": r.monthly_cash_flow,
             "CoC %": r.coc_return_pct,
             "GRM": r.gross_rent_multiplier,
@@ -447,7 +468,8 @@ else:
 
             st.markdown("")
             st.markdown("**Monthly Income**")
-            st.markdown(f"Gross Rent: **${r.monthly_rent:,.0f}** ({'API estimate' if r.rent_source == 'api_estimate' else '0.8% rule estimate'})")
+            _rent_label = {"api_estimate": "Rentcast AVM", "manual": "manual entry"}.get(r.rent_source, "0.8% rule estimate")
+            st.markdown(f"Gross Rent: **${r.monthly_rent:,.0f}** ({_rent_label})")
 
         with dcol2:
             st.markdown("**Monthly Expenses Breakdown**")

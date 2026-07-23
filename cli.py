@@ -183,6 +183,9 @@ def main() -> None:
     parser.add_argument("--detail", type=int, metavar="RANK", help="Print full detail for property at given rank")
     parser.add_argument("--no-api-rent", action="store_true",
                         help="Skip Rentcast rent AVM and use 0.8%% rule for all rent estimates")
+    parser.add_argument("--rent", type=float, default=None, metavar="AMOUNT",
+                        help="Manual rent override $ applied to every property (skips all AVM calls). "
+                             "e.g. --rent 2200")
     parser.add_argument("--max-rent-calls", type=int, default=40,
                         help=(
                             "Max live rent AVM API calls to make (default: 40). "
@@ -254,7 +257,10 @@ def main() -> None:
     prescreened = prescreen_listings(listings, assumptions)
 
     # Phase 2 (optional): Accurate rent AVM for top candidates
-    if args.no_api_rent:
+    if args.rent is not None:
+        print(f" Using manual rent override: ${args.rent:,.0f}/mo for all properties.")
+        rent_map: dict = {}
+    elif args.no_api_rent:
         print(" Using 0.8% rule for all rent estimates (--no-api-rent).")
         rent_map: dict = {}
     else:
@@ -294,7 +300,10 @@ def main() -> None:
         listing_id = listing.get("id", listing.get("formattedAddress", ""))
         rent_data = rent_map.get(listing_id)
 
-        if rent_data:
+        if args.rent is not None:
+            monthly_rent = float(args.rent)
+            rent_source = "manual"
+        elif rent_data:
             monthly_rent, _, _ = rent_data
             rent_source = "api_estimate"
         else:
