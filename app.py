@@ -12,7 +12,10 @@ import pandas as pd
 import streamlit as st
 
 from calculator import LTRAssumptions, LTRResult, calculate_ltr, estimate_rent_1pct
-from fetcher import RateLimitError, batch_rent_estimates, fetch_listings, prescreen_listings
+from fetcher import (
+    RateLimitError, batch_rent_estimates, fetch_listings, prescreen_listings,
+    get_usage, set_plan_limit, get_plan_limit,
+)
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -74,6 +77,59 @@ with st.sidebar:
             st.success("Saved!")
     with col_hint:
         st.caption("Stored in .env locally")
+
+    # -- API Usage Meter --
+    st.divider()
+    usage = get_usage()
+    calls = usage["calls"]
+    plan_limit = usage["plan_limit"]
+    remaining = usage["remaining"]
+    over = usage["over_limit"]
+    pct = usage["pct_used"]
+    breakdown = usage["breakdown"]
+
+    st.subheader("API Usage This Month")
+
+    # Allow user to set their plan limit
+    new_limit = st.number_input(
+        "Plan limit (calls/month)",
+        value=plan_limit,
+        min_value=10,
+        max_value=100000,
+        step=50,
+        help="Free tier = 50. Change this if you're on a paid Rentcast plan.",
+        key="plan_limit_input",
+    )
+    if new_limit != plan_limit:
+        set_plan_limit(int(new_limit))
+        plan_limit = int(new_limit)
+        remaining = max(0, plan_limit - calls)
+        over = max(0, calls - plan_limit)
+        pct = min(100, round(calls / plan_limit * 100))
+
+    if over > 0:
+        st.error(f"⚠️ {calls} / {plan_limit} calls used — **{over} over limit**")
+    elif pct >= 80:
+        st.warning(f"🔶 {calls} / {plan_limit} calls used ({remaining} remaining)")
+    else:
+        st.success(f"✅ {calls} / {plan_limit} calls used ({remaining} remaining)")
+
+    st.progress(pct, text=f"{pct}% used")
+
+    if breakdown:
+        with st.expander("Breakdown"):
+            for ep, count in sorted(breakdown.items(), key=lambda x: -x[1]):
+                label = {"listings": "Listing pages", "rent_avm": "Rent AVM calls"}.get(ep, ep)
+                st.markdown(f"- {label}: **{count}**")
+        if usage.get("last_call"):
+            from datetime import datetime as _dt
+            last = _dt.fromisoformat(usage["last_call"]).strftime("%b %d %H:%M")
+            st.caption(f"Last call: {last}")
+
+    st.caption(
+        "Tracked locally — resets on the 1st of each month. "
+        "Cached results don't count."
+    )
 
     st.divider()
 

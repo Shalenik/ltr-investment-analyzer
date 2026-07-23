@@ -56,6 +56,100 @@ def _sanitize_key(s: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Local API usage tracker (Rentcast has no usage endpoint — we count locally)
+# ---------------------------------------------------------------------------
+
+_USAGE_FILE = CACHE_DIR / "api_usage.json"
+
+
+def _load_usage() -> dict:
+    """Load this month's usage counter. Resets automatically each calendar month."""
+    CACHE_DIR.mkdir(exist_ok=True)
+    now = datetime.now()
+    month_key = now.strftime("%Y-%m")
+    try:
+        data = json.loads(_USAGE_FILE.read_text())
+        if data.get("month") == month_key:
+            return data
+    except Exception:
+        pass
+    # Start fresh for a new month
+    return {"month": month_key, "calls": 0, "breakdown": {}}
+
+
+def _save_usage(usage: dict) -> None:
+    _USAGE_FILE.write_text(json.dumps(usage, indent=2))
+
+
+def increment_usage(endpoint: str = "other") -> None:
+    """Increment the live API call counter for the current month."""
+    usage = _load_usage()
+    usage["calls"] = usage.get("calls", 0) + 1
+    breakdown = usage.setdefault("breakdown", {})
+    breakdown[endpoint] = breakdown.get(endpoint, 0) + 1
+    usage["last_call"] = datetime.now().isoformat()
+    _save_usage(usage)
+
+
+def get_usage() -> dict:
+    """
+    Return current month's API usage stats.
+
+    Keys: month, calls, breakdown, last_call, plan_limit, remaining, pct_used
+    """
+    usage = _load_usage()
+    plan_limit = 50  # Free tier default
+    calls = usage.get("calls", 0)
+    remaining = max(0, plan_limit - calls)
+    over = max(0, calls - plan_limit)
+    return {
+        "month": usage.get("month", ""),
+        "calls": calls,
+        "breakdown": usage.get("breakdown", {}),
+        "last_call": usage.get("last_call"),
+        "plan_limit": plan_limit,
+        "remaining": remaining,
+        "over_limit": over,
+        "pct_used": min(100, round(calls / plan_limit * 100)),
+    }
+
+
+def set_plan_limit(limit: int) -> None:
+    """Persist a custom plan limit (e.g. 1000 for paid plans)."""
+    CACHE_DIR.mkdir(exist_ok=True)
+    cfg_file = CACHE_DIR / "plan_config.json"
+    cfg_file.write_text(json.dumps({"plan_limit": limit}))
+
+
+def get_plan_limit() -> int:
+    cfg_file = CACHE_DIR / "plan_config.json"
+    try:
+        return json.loads(cfg_file.read_text()).get("plan_limit", 50)
+    except Exception:
+        return 50
+
+
+# Patch get_usage to use persisted plan limit
+_orig_get_usage = get_usage
+def get_usage() -> dict:  # noqa: F811
+    usage = _load_usage()
+    plan_limit = get_plan_limit()
+    calls = usage.get("calls", 0)
+    remaining = max(0, plan_limit - calls)
+    over = max(0, calls - plan_limit)
+    return {
+        "month": usage.get("month", ""),
+        "calls": calls,
+        "breakdown": usage.get("breakdown", {}),
+        "last_call": usage.get("last_call"),
+        "plan_limit": plan_limit,
+        "remaining": remaining,
+        "over_limit": over,
+        "pct_used": min(100, round(calls / plan_limit * 100)),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Rentcast API calls
 # ---------------------------------------------------------------------------
 
@@ -125,6 +219,7 @@ def fetch_listings(
             timeout=30,
         )
         resp.raise_for_status()
+        increment_usage("listings")
         page = resp.json()
 
         # Rentcast returns a list or wraps in {"data": [...]}
@@ -190,6 +285,7 @@ def fetch_rent_estimate(
         if resp.status_code == 404:
             return None  # No data for this address
         resp.raise_for_status()
+        increment_usage("rent_avm")
         data = resp.json()
 
         rent = data.get("rent") or data.get("rentZestimate") or data.get("price")
