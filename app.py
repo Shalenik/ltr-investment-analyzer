@@ -492,15 +492,19 @@ rent_source_mode = st.radio(
 st.divider()
 
 # -- Rent source sub-options --
-manual_rent = None
+manual_rent_by_beds = {1: 1200, 2: 1600, 3: 2000, 4: 2400, 5: 2800}  # defaults, overwritten if Manual Entry
 max_rent_calls = 0
 
 if rent_source_mode == "Manual Entry":
-    manual_rent = st.number_input(
-        "Monthly Rent ($) to apply to all properties",
-        value=2000, step=50, min_value=0,
-        help="Used for every property when no per-row rent is provided.",
-    )
+    st.caption("Set your expected monthly rent by bedroom count. Used when no per-row rent is provided.")
+    bc1, bc2, bc3, bc4, bc5 = st.columns(5)
+    manual_rent_by_beds = {
+        1: int(bc1.number_input("1 BR ($)", value=1200, step=50, min_value=0, key="mr_1")),
+        2: int(bc2.number_input("2 BR ($)", value=1600, step=50, min_value=0, key="mr_2")),
+        3: int(bc3.number_input("3 BR ($)", value=2000, step=50, min_value=0, key="mr_3")),
+        4: int(bc4.number_input("4 BR ($)", value=2400, step=50, min_value=0, key="mr_4")),
+        5: int(bc5.number_input("5+ BR ($)", value=2800, step=50, min_value=0, key="mr_5")),
+    }
 elif rent_source_mode == "Rentcast AVM (API)":
     max_rent_calls = st.number_input(
         "Max AVM calls per search",
@@ -589,7 +593,8 @@ with tab_search:
         rent_map: dict = {}
 
         if rent_source_mode == "Manual Entry":
-            st.info(f"Found **{n_all} listings**. Using manual rent **${manual_rent:,}/mo**.")
+            rent_preview = ", ".join(f"{b}BR=${v:,}" for b, v in manual_rent_by_beds.items())
+            st.info(f"Found **{n_all} listings**. Using per-bedroom rents: {rent_preview}.")
         elif rent_source_mode == "0.8% Rule (no API)":
             st.info(f"Found **{n_all} listings**. Using 0.8% rule (no API calls).")
         else:
@@ -624,7 +629,9 @@ with tab_search:
             rent_data = rent_map.get(listing_id)
 
             if rent_source_mode == "Manual Entry":
-                monthly_rent_val = float(manual_rent)
+                beds = listing.get("bedrooms")
+                b = max(1, min(5, int(beds))) if beds else 3
+                monthly_rent_val = float(manual_rent_by_beds.get(b, manual_rent_by_beds[3]))
                 rs = "manual"
             elif rent_data:
                 monthly_rent_val, _, _ = rent_data
@@ -773,7 +780,9 @@ with tab_upload:
                     monthly_rent_val = estimate_rent_1pct(price)
                     rs = "0.8pct_rule"
             elif rent_source_mode == "Manual Entry":
-                monthly_rent_val = float(manual_rent)
+                beds = listing.get("bedrooms")
+                b = max(1, min(5, int(beds))) if beds else 3
+                monthly_rent_val = float(manual_rent_by_beds.get(b, manual_rent_by_beds[3]))
                 rs = "manual"
             else:
                 monthly_rent_val = estimate_rent_1pct(price)
